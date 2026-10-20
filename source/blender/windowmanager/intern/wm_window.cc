@@ -103,6 +103,13 @@
 #  include "wm_window_icon.hh"
 #endif
 
+#ifdef WIN32
+#  ifndef WIN32_LEAN_AND_MEAN
+#    define WIN32_LEAN_AND_MEAN
+#  endif
+#  include <windows.h>
+#endif
+
 /* For assert. */
 #ifndef NDEBUG
 #  include "BLI_threads.hh"
@@ -156,6 +163,11 @@ static struct wmInitStruct {
   bool window_frame = true;
   bool window_focus = true;
   bool native_pixels = true;
+
+  /** External Win32 HWND to parent the main window under (WS_CHILD embed). */
+  void *parent_hwnd = nullptr;
+  /** Optional host process id; refuse embed if the host has already exited. */
+  int host_pid = 0;
 } wm_init_state;
 
 /* -------------------------------------------------------------------- */
@@ -2343,6 +2355,48 @@ void wm_ghost_init(bContext *C)
 
   g_system->useWindowFocus(wm_init_state.window_focus);
 
+  if (wm_init_state.parent_hwnd) {
+#ifdef WIN32
+    if (wm_init_state.host_pid > 0) {
+      HANDLE host = OpenProcess(SYNCHRONIZE, FALSE, DWORD(wm_init_state.host_pid));
+      if (host) {
+        const DWORD wait = WaitForSingleObject(host, 0);
+        CloseHandle(host);
+        if (wait == WAIT_OBJECT_0) {
+          CLOG_WARN(&LOG_GHOST_SYSTEM,
+                    "Host process %d already exited; ignoring --parent-hwnd",
+                    wm_init_state.host_pid);
+          wm_init_state.parent_hwnd = nullptr;
+        }
+      }
+      else {
+        CLOG_WARN(&LOG_GHOST_SYSTEM,
+                  "Host process %d not found; ignoring --parent-hwnd",
+                  wm_init_state.host_pid);
+        wm_init_state.parent_hwnd = nullptr;
+      }
+    }
+    if (wm_init_state.parent_hwnd) {
+      g_system->setEmbedParentWindow(wm_init_state.parent_hwnd);
+      /* Embed must stay a normal child; never open fullscreen/maximized into a panel. */
+      wm_init_state.windowstate = GHOST_kWindowStateNormal;
+      wm_init_state.override_flag |= WIN_OVERRIDE_WINSTATE;
+      RECT client_rect;
+      if (GetClientRect(HWND(wm_init_state.parent_hwnd), &client_rect)) {
+        const int cw = int(client_rect.right - client_rect.left);
+        const int ch = int(client_rect.bottom - client_rect.top);
+        if (cw > 0 && ch > 0) {
+          wm_init_state.start = int2(0, 0);
+          wm_init_state.size = int2(std::max(cw, 64), std::max(ch, 64));
+          wm_init_state.override_flag |= WIN_OVERRIDE_GEOM;
+        }
+      }
+    }
+#else
+    (void)0; /* --parent-hwnd is Windows-only. */
+#endif
+  }
+
 #ifdef WITH_GHOST_WAYLAND
   g_system->setIconGenerator(&wm_ghost_icon_generator);
 #endif
@@ -3035,6 +3089,16 @@ void WM_init_state_maximized_set()
 {
   wm_init_state.windowstate = GHOST_kWindowStateMaximized;
   wm_init_state.override_flag |= WIN_OVERRIDE_WINSTATE;
+}
+
+void WM_init_state_parent_hwnd_set(void *hwnd)
+{
+  wm_init_state.parent_hwnd = hwnd;
+}
+
+void WM_init_state_host_pid_set(int host_pid)
+{
+  wm_init_state.host_pid = host_pid;
 }
 
 bool WM_init_window_frame_get()

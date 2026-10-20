@@ -84,26 +84,53 @@ GHOST_WindowWin32::GHOST_WindowWin32(GHOST_SystemWin32 *system,
       parent_window_hwnd_(parent_window ? parent_window->h_wnd_ : HWND_DESKTOP),
       direct_manipulation_helper_(nullptr)
 {
-  DWORD style = parent_window ?
-                    WS_POPUPWINDOW | WS_CAPTION | WS_MAXIMIZEBOX | WS_MINIMIZEBOX | WS_SIZEBOX :
-                    WS_OVERLAPPEDWINDOW;
+  /* External host panel (--parent-hwnd): create main window as WS_CHILD (Light Tracer model).
+   * Only for the first top-level window (no GHOST parent); dialogs stay owned popups. */
+  HWND embed_hwnd = nullptr;
+  const bool embed_as_child = (!parent_window && !dialog &&
+                               system->consumeEmbedParentWindow(&embed_hwnd) && embed_hwnd);
 
-  if (state == GHOST_kWindowStateFullScreen) {
-    style |= WS_MAXIMIZE;
+  DWORD style;
+  DWORD extended_style;
+  RECT win_rect;
+
+  if (embed_as_child) {
+    style = WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS | WS_CLIPCHILDREN;
+    extended_style = 0;
+    parent_window_hwnd_ = embed_hwnd;
+
+    RECT client_rect = {0, 0, 0, 0};
+    ::GetClientRect(embed_hwnd, &client_rect);
+    const LONG cw = client_rect.right - client_rect.left;
+    const LONG ch = client_rect.bottom - client_rect.top;
+    win_rect.left = 0;
+    win_rect.top = 0;
+    win_rect.right = (cw > 0) ? cw : LONG(width);
+    win_rect.bottom = (ch > 0) ? ch : LONG(height);
+    /* Child client size == window size; do not adjust for chrome. */
   }
+  else {
+    style = parent_window ?
+                WS_POPUPWINDOW | WS_CAPTION | WS_MAXIMIZEBOX | WS_MINIMIZEBOX | WS_SIZEBOX :
+                WS_OVERLAPPEDWINDOW;
 
-  /* Forces owned windows onto taskbar and allows minimization. */
-  DWORD extended_style = parent_window ? WS_EX_APPWINDOW : 0;
+    if (state == GHOST_kWindowStateFullScreen) {
+      style |= WS_MAXIMIZE;
+    }
 
-  if (dialog) {
-    /* When we are ready to make windows of this type:
-     * style = WS_POPUPWINDOW | WS_CAPTION
-     * extended_style = WS_EX_DLGMODALFRAME | WS_EX_TOPMOST
-     */
+    /* Forces owned windows onto taskbar and allows minimization. */
+    extended_style = parent_window ? WS_EX_APPWINDOW : 0;
+
+    if (dialog) {
+      /* When we are ready to make windows of this type:
+       * style = WS_POPUPWINDOW | WS_CAPTION
+       * extended_style = WS_EX_DLGMODALFRAME | WS_EX_TOPMOST
+       */
+    }
+
+    win_rect = {left, top, long(left + width), long(top + height)};
+    adjustWindowRectForClosestMonitor(&win_rect, style, extended_style);
   }
-
-  RECT win_rect = {left, top, long(left + width), long(top + height)};
-  adjustWindowRectForClosestMonitor(&win_rect, style, extended_style);
 
   wchar_t *title_16 = alloc_utf16_from_8((char *)title, 0);
   h_wnd_ = ::CreateWindowExW(extended_style,                 /* window extended style */
@@ -124,7 +151,10 @@ GHOST_WindowWin32::GHOST_WindowWin32(GHOST_SystemWin32 *system,
     return;
   }
 
-  registerWindowAppUserModelProperties();
+  /* Taskbar AppUserModel assumes a top-level HWND; skip for embedded children. */
+  if (!embed_as_child) {
+    registerWindowAppUserModelProperties();
+  }
 
   /*  Store the device context. */
   h_DC_ = ::GetDC(h_wnd_);
@@ -175,7 +205,7 @@ GHOST_WindowWin32::GHOST_WindowWin32(GHOST_SystemWin32 *system,
   /* Store a pointer to this class in the window structure. */
   ::SetWindowLongPtr(h_wnd_, GWLP_USERDATA, (LONG_PTR)this);
 
-  if (!system_->window_focus_) {
+  if (!embed_as_child && !system_->window_focus_) {
     /* If we don't want focus then lower to bottom. */
     ::SetWindowPos(h_wnd_, HWND_BOTTOM, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
   }
@@ -188,18 +218,24 @@ GHOST_WindowWin32::GHOST_WindowWin32(GHOST_SystemWin32 *system,
 
   /* Show the window. */
   int nCmdShow;
-  switch (state) {
-    case GHOST_kWindowStateFullScreen:
-    case GHOST_kWindowStateMaximized:
-      nCmdShow = SW_SHOWMAXIMIZED;
-      break;
-    case GHOST_kWindowStateMinimized:
-      nCmdShow = (system_->window_focus_) ? SW_SHOWMINIMIZED : SW_SHOWMINNOACTIVE;
-      break;
-    case GHOST_kWindowStateNormal:
-    default:
-      nCmdShow = (system_->window_focus_) ? SW_SHOWNORMAL : SW_SHOWNOACTIVATE;
-      break;
+  if (embed_as_child) {
+    /* Host owns focus; show without activating the desktop. */
+    nCmdShow = SW_SHOWNOACTIVATE;
+  }
+  else {
+    switch (state) {
+      case GHOST_kWindowStateFullScreen:
+      case GHOST_kWindowStateMaximized:
+        nCmdShow = SW_SHOWMAXIMIZED;
+        break;
+      case GHOST_kWindowStateMinimized:
+        nCmdShow = (system_->window_focus_) ? SW_SHOWMINIMIZED : SW_SHOWMINNOACTIVE;
+        break;
+      case GHOST_kWindowStateNormal:
+      default:
+        nCmdShow = (system_->window_focus_) ? SW_SHOWNORMAL : SW_SHOWNOACTIVATE;
+        break;
+    }
   }
 
   ThemeRefresh();
@@ -211,9 +247,11 @@ GHOST_WindowWin32::GHOST_WindowWin32(GHOST_SystemWin32 *system,
     loadWintab(GHOST_kWindowStateMinimized != state);
   }
 
-  /* Allow the showing of a progress bar on the taskbar. */
-  CoCreateInstance(
-      CLSID_TaskbarList, nullptr, CLSCTX_INPROC_SERVER, IID_ITaskbarList3, (LPVOID *)&bar_);
+  /* Allow the showing of a progress bar on the taskbar (top-level windows only). */
+  if (!embed_as_child) {
+    CoCreateInstance(
+        CLSID_TaskbarList, nullptr, CLSCTX_INPROC_SERVER, IID_ITaskbarList3, (LPVOID *)&bar_);
+  }
 
   /* Initialize Direct Manipulation. */
   direct_manipulation_helper_ = GHOST_DirectManipulationHelper::create(h_wnd_, getDPIHint());

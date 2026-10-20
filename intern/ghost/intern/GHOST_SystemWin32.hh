@@ -113,6 +113,21 @@ class GHOST_SystemWin32 : public GHOST_System {
                               const GHOST_IWindow *parent_window = nullptr) override;
 
   /**
+   * Create the next top-level main window as a WS_CHILD of an external HWND.
+   * Consumed on the first createWindow() that has no GHOST parent.
+   */
+  void setEmbedParentWindow(void *hwnd) override;
+
+  /** Valid external HWND while embedding; nullptr when not embedding. */
+  HWND getEmbedParentWindow() const
+  {
+    return embed_parent_hwnd_;
+  }
+
+  /** True while the next/current main window should be created as WS_CHILD. */
+  bool consumeEmbedParentWindow(HWND *r_hwnd);
+
+  /**
    * Create a new off-screen context.
    * Never explicitly delete the window, use #disposeContext() instead.
    * \return The new context (or 0 if creation failed).
@@ -489,6 +504,14 @@ class GHOST_SystemWin32 : public GHOST_System {
   /** Wheel delta accumulators. */
   int wheel_delta_accum_vertical_;
   int wheel_delta_accum_horizontal_;
+
+  /**
+   * External host panel HWND for WS_CHILD embed (--parent-hwnd).
+   * Kept while running so processEvents can detect parent destroy.
+   */
+  HWND embed_parent_hwnd_ = nullptr;
+  /** True until the first main window has been created as WS_CHILD. */
+  bool embed_pending_ = false;
 };
 
 inline void GHOST_SystemWin32::handleKeyboardChange()

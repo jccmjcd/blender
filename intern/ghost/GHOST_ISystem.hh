@@ -293,6 +293,12 @@ class GHOST_ISystem {
   virtual void setAutoFocus(const bool auto_focus) = 0;
 
   /**
+   * On Windows, create the next main window as a WS_CHILD of \a hwnd
+   * (external host panel). Other platforms ignore this. Cleared after first use.
+   */
+  virtual void setEmbedParentWindow(void * /*hwnd*/) {}
+
+  /**
    * Get the Window under the cursor. Although coordinates of the mouse are supplied, platform-
    * specific implementations are free to ignore these and query the mouse location themselves, due
    * to them possibly being incorrect under certain conditions, for example when using multiple

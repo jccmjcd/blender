@@ -260,6 +260,39 @@ void GHOST_SystemWin32::getAllDisplayDimensions(uint32_t &width, uint32_t &heigh
   height = ::GetSystemMetrics(SM_CYVIRTUALSCREEN);
 }
 
+void GHOST_SystemWin32::setEmbedParentWindow(void *hwnd)
+{
+  HWND parent = static_cast<HWND>(hwnd);
+  if (parent && ::IsWindow(parent)) {
+    embed_parent_hwnd_ = parent;
+    embed_pending_ = true;
+  }
+  else {
+    embed_parent_hwnd_ = nullptr;
+    embed_pending_ = false;
+  }
+}
+
+bool GHOST_SystemWin32::consumeEmbedParentWindow(HWND *r_hwnd)
+{
+  if (!embed_pending_ || !embed_parent_hwnd_ || !::IsWindow(embed_parent_hwnd_)) {
+    embed_pending_ = false;
+    if (!embed_parent_hwnd_ || !::IsWindow(embed_parent_hwnd_)) {
+      embed_parent_hwnd_ = nullptr;
+    }
+    if (r_hwnd) {
+      *r_hwnd = nullptr;
+    }
+    return false;
+  }
+  if (r_hwnd) {
+    *r_hwnd = embed_parent_hwnd_;
+  }
+  /* Keep embed_parent_hwnd_ for parent-destroy watchdog; only first create uses it. */
+  embed_pending_ = false;
+  return true;
+}
+
 GHOST_IWindow *GHOST_SystemWin32::createWindow(const char *title,
                                                int32_t left,
                                                int32_t top,
@@ -411,6 +444,19 @@ bool GHOST_SystemWin32::processEvents(bool waitForEvent)
 
   do {
     GHOST_TimerManager *timerMgr = getTimerManager();
+
+    /* Host panel gone: exit cleanly so we do not leave an orphaned child HWND. */
+    if (embed_parent_hwnd_ && !::IsWindow(embed_parent_hwnd_)) {
+      embed_parent_hwnd_ = nullptr;
+      GHOST_WindowManager *wm = getWindowManager();
+      if (wm) {
+        for (GHOST_IWindow *iter_win : wm->getWindows()) {
+          pushEvent(processWindowEvent(GHOST_kEventWindowClose,
+                                       static_cast<GHOST_WindowWin32 *>(iter_win)));
+        }
+      }
+      hasEventHandled = true;
+    }
 
     if (waitForEvent && !::PeekMessage(&msg, nullptr, 0, 0, PM_NOREMOVE)) {
 #if 1
@@ -2019,6 +2065,12 @@ LRESULT WINAPI GHOST_SystemWin32::s_wndProc(HWND hwnd, uint msg, WPARAM wParam, 
         case WM_MOUSEHOVER: {
           /* Mouse Tracking is now off. TrackMouseEvent restarts in MouseMove. */
           window->mouse_present_ = false;
+
+          /* When embedded as WS_CHILD of an external host, do not steal focus from the host;
+           * the host drives AttachThreadInput + SetFocus (Light Tracer model). */
+          if (system->embed_parent_hwnd_ && ::GetParent(hwnd) == system->embed_parent_hwnd_) {
+            break;
+          }
 
           /* Auto-focus only occurs within Blender windows, not with _other_ applications. We are
            * notified of change of focus from our console, but it returns null from GetFocus. */

@@ -708,6 +708,8 @@ static void print_help(bArgs *ba, bool all)
   BLI_args_print_arg_doc(ba, "--window-maximized");
   BLI_args_print_arg_doc(ba, "--window-fullscreen");
   BLI_args_print_arg_doc(ba, "--window-geometry");
+  BLI_args_print_arg_doc(ba, "--parent-hwnd");
+  BLI_args_print_arg_doc(ba, "--host-pid");
   BLI_args_print_arg_doc(ba, "--start-console");
   BLI_args_print_arg_doc(ba, "--no-native-pixels");
   BLI_args_print_arg_doc(ba, "--no-window-frame");
@@ -2042,6 +2044,51 @@ static int arg_handle_window_geometry(int argc, const char **argv, void * /*data
   WM_init_state_size_set(UNPACK4(params));
 
   return 4;
+}
+
+static const char arg_handle_parent_hwnd_doc[] =
+    "<hwnd>\n"
+    "\tCreate the main window as a Win32 WS_CHILD of decimal HWND <hwnd> (Windows only).";
+static int arg_handle_parent_hwnd(int argc, const char **argv, void * /*data*/)
+{
+  const char *arg_id = "--parent-hwnd";
+  if (argc < 2) {
+    fprintf(stderr, "Error: requires one argument '%s'\n", arg_id);
+    exit(1);
+  }
+
+  char *end = nullptr;
+  const unsigned long long value = strtoull(argv[1], &end, 10);
+  if (end == argv[1] || (end && *end != '\0')) {
+    fprintf(stderr, "Error: invalid HWND for '%s' (expected decimal integer).\n", arg_id);
+    exit(1);
+  }
+
+  WM_init_state_parent_hwnd_set(reinterpret_cast<void *>(uintptr_t(value)));
+  return 1;
+}
+
+static const char arg_handle_host_pid_doc[] =
+    "<pid>\n"
+    "\tOptional host process id; refuse --parent-hwnd embed if the host has exited "
+    "(Windows only).";
+static int arg_handle_host_pid(int argc, const char **argv, void * /*data*/)
+{
+  const char *arg_id = "--host-pid";
+  if (argc < 2) {
+    fprintf(stderr, "Error: requires one argument '%s'\n", arg_id);
+    exit(1);
+  }
+
+  int host_pid = 0;
+  const char *err_msg = nullptr;
+  if (!parse_int_strict_range(argv[1], nullptr, 1, INT_MAX, &host_pid, &err_msg)) {
+    fprintf(stderr, "\nError: %s '%s %s'.\n", err_msg, arg_id, argv[1]);
+    exit(1);
+  }
+
+  WM_init_state_host_pid_set(host_pid);
+  return 1;
 }
 
 static const char arg_handle_native_pixels_set_doc[] =
@@ -3386,6 +3433,8 @@ void main_args_setup(bContext *C, bArgs *ba, bool all)
   BLI_args_add(ba, "-w", "--window-border", CB(arg_handle_window_border), nullptr);
   BLI_args_add(ba, "-W", "--window-fullscreen", CB(arg_handle_window_fullscreen), nullptr);
   BLI_args_add(ba, "-M", "--window-maximized", CB(arg_handle_window_maximized), nullptr);
+  BLI_args_add(ba, nullptr, "--parent-hwnd", CB(arg_handle_parent_hwnd), nullptr);
+  BLI_args_add(ba, nullptr, "--host-pid", CB(arg_handle_host_pid), nullptr);
   BLI_args_add(ba, nullptr, "--no-window-frame", CB(arg_handle_no_window_frame), nullptr);
   BLI_args_add(ba, nullptr, "--no-window-focus", CB(arg_handle_no_window_focus), nullptr);
   BLI_args_add(ba, "-con", "--start-console", CB(arg_handle_start_with_console), nullptr);

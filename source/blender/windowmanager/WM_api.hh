@@ -122,6 +122,12 @@ void WM_init_state_fullscreen_set();
 void WM_init_state_normal_set();
 void WM_init_state_maximized_set();
 void WM_init_state_start_with_console_set(bool value);
+/**
+ * Embed Blender's main window as a Win32 WS_CHILD of an external HWND
+ * (ZW3D / Light Tracer style). Windows only; ignored on other platforms.
+ */
+void WM_init_state_parent_hwnd_set(void *hwnd);
+void WM_init_state_host_pid_set(int host_pid);
 void WM_init_window_focus_set(bool do_it);
 bool WM_init_window_frame_get();
 void WM_init_window_frame_set(bool do_it);
