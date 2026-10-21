@@ -95,7 +95,9 @@ GHOST_WindowWin32::GHOST_WindowWin32(GHOST_SystemWin32 *system,
   RECT win_rect;
 
   if (embed_as_child) {
-    style = WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS | WS_CLIPCHILDREN;
+    /* Create hidden, then show after styles are final — avoids a one-frame
+     * titled flash inside the ZW3D / Dream Scintilla host panel. */
+    style = WS_CHILD | WS_CLIPSIBLINGS | WS_CLIPCHILDREN;
     extended_style = 0;
     parent_window_hwnd_ = embed_hwnd;
 
@@ -149,6 +151,11 @@ GHOST_WindowWin32::GHOST_WindowWin32(GHOST_SystemWin32 *system,
 
   if (h_wnd_ == nullptr) {
     return;
+  }
+
+  if (embed_as_child) {
+    /* No title text even if a style race briefly adds caption chrome. */
+    ::SetWindowTextW(h_wnd_, L"");
   }
 
   /* Taskbar AppUserModel assumes a top-level HWND; skip for embedded children. */
@@ -219,8 +226,9 @@ GHOST_WindowWin32::GHOST_WindowWin32(GHOST_SystemWin32 *system,
   /* Show the window. */
   int nCmdShow;
   if (embed_as_child) {
-    /* Host owns focus; show without activating the desktop. */
-    nCmdShow = SW_SHOWNOACTIVATE;
+    /* Stay hidden until the ZW3D / Dream Scintilla host adopts and shows us.
+     * Showing here causes a one-second "Blender 5.3 Beta" chrome flash in the panel. */
+    nCmdShow = SW_HIDE;
   }
   else {
     switch (state) {

@@ -415,9 +415,17 @@ void WM_init(bContext *C, int argc, const char **argv)
   wm_homefile_read_post(C, params_file_read_post);
 }
 
+/* Defined in wm_window.cc — not exported via WM_api.hh. */
+bool WM_init_state_parent_hwnd_is_set();
+
 static bool wm_init_splash_show_on_startup_check()
 {
   if (U.uiflag & USER_SPLASH_DISABLE) {
+    return false;
+  }
+
+  /* Embedded in Jewelry CAD Dream / ZW3D — no splash over the host panel. */
+  if (WM_init_state_parent_hwnd_is_set()) {
     return false;
   }
 

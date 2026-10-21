@@ -2370,10 +2370,13 @@ void wm_ghost_init(bContext *C)
         }
       }
       else {
+        /* OpenProcess often fails across integrity levels (ZW3D elevated / JCD DLL).
+         * Do NOT drop --parent-hwnd — that creates a titled top-level window inside the
+         * host panel (window-in-window). Only refuse embed when the host is confirmed dead. */
         CLOG_WARN(&LOG_GHOST_SYSTEM,
-                  "Host process %d not found; ignoring --parent-hwnd",
-                  wm_init_state.host_pid);
-        wm_init_state.parent_hwnd = nullptr;
+                  "Host process %d not accessible (err %lu); keeping --parent-hwnd embed",
+                  wm_init_state.host_pid,
+                  GetLastError());
       }
     }
     if (wm_init_state.parent_hwnd) {
@@ -3094,6 +3097,11 @@ void WM_init_state_maximized_set()
 void WM_init_state_parent_hwnd_set(void *hwnd)
 {
   wm_init_state.parent_hwnd = hwnd;
+}
+
+bool WM_init_state_parent_hwnd_is_set()
+{
+  return wm_init_state.parent_hwnd != nullptr;
 }
 
 void WM_init_state_host_pid_set(int host_pid)
