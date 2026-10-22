@@ -1073,8 +1073,10 @@ static void wm_window_ghostwindow_add(wmWindowManager *wm,
     }
 
 #ifndef __APPLE__
-    /* Set the state here, so minimized state comes up correct on windows. */
-    if (wm_init_state.window_focus) {
+    /* Set the state here, so minimized state comes up correct on windows.
+     * Skip when embedded (--parent-hwnd): setState restores WS_CAPTION +
+     * SetWindowPlacement and freezes the child at create-time size. */
+    if (wm_init_state.window_focus && !wm_init_state.parent_hwnd) {
       ghost_window->setState(GHOST_TWindowState(win->windowstate));
     }
 #endif

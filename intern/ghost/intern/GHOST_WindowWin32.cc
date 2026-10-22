@@ -94,12 +94,34 @@ GHOST_WindowWin32::GHOST_WindowWin32(GHOST_SystemWin32 *system,
   DWORD extended_style;
   RECT win_rect;
 
+  /* Match host panel DPI awareness so mixed-mode scaling cannot leave gutters. */
+  using SetThreadDpiAwarenessContextFn = DPI_AWARENESS_CONTEXT(WINAPI *)(DPI_AWARENESS_CONTEXT);
+  using GetWindowDpiAwarenessContextFn = DPI_AWARENESS_CONTEXT(WINAPI *)(HWND);
+  SetThreadDpiAwarenessContextFn set_dpi_ctx = nullptr;
+  GetWindowDpiAwarenessContextFn get_win_dpi_ctx = nullptr;
+  DPI_AWARENESS_CONTEXT prev_dpi_ctx = nullptr;
+  bool dpi_ctx_changed = false;
+  {
+    HMODULE user32 = ::GetModuleHandleW(L"user32.dll");
+    if (user32) {
+      set_dpi_ctx = (SetThreadDpiAwarenessContextFn)::GetProcAddress(
+          user32, "SetThreadDpiAwarenessContext");
+      get_win_dpi_ctx = (GetWindowDpiAwarenessContextFn)::GetProcAddress(
+          user32, "GetWindowDpiAwarenessContext");
+    }
+  }
+
   if (embed_as_child) {
     /* Create hidden, then show after styles are final — avoids a one-frame
      * titled flash inside the ZW3D / Dream Scintilla host panel. */
     style = WS_CHILD | WS_CLIPSIBLINGS | WS_CLIPCHILDREN;
     extended_style = 0;
     parent_window_hwnd_ = embed_hwnd;
+
+    if (set_dpi_ctx && get_win_dpi_ctx) {
+      prev_dpi_ctx = set_dpi_ctx(get_win_dpi_ctx(embed_hwnd));
+      dpi_ctx_changed = true;
+    }
 
     RECT client_rect = {0, 0, 0, 0};
     ::GetClientRect(embed_hwnd, &client_rect);
@@ -148,6 +170,10 @@ GHOST_WindowWin32::GHOST_WindowWin32(GHOST_SystemWin32 *system,
                              ::GetModuleHandle(0), /* handle to application instance */
                              0);                   /* pointer to window-creation data */
   free(title_16);
+
+  if (dpi_ctx_changed && set_dpi_ctx) {
+    set_dpi_ctx(prev_dpi_ctx);
+  }
 
   if (h_wnd_ == nullptr) {
     return;
@@ -261,8 +287,11 @@ GHOST_WindowWin32::GHOST_WindowWin32(GHOST_SystemWin32 *system,
         CLSID_TaskbarList, nullptr, CLSCTX_INPROC_SERVER, IID_ITaskbarList3, (LPVOID *)&bar_);
   }
 
-  /* Initialize Direct Manipulation. */
-  direct_manipulation_helper_ = GHOST_DirectManipulationHelper::create(h_wnd_, getDPIHint());
+  /* Direct Manipulation on a cross-process WS_CHILD can leave a scaled
+   * content transform (black gutters). Host panel owns input focus anyway. */
+  if (!embed_as_child) {
+    direct_manipulation_helper_ = GHOST_DirectManipulationHelper::create(h_wnd_, getDPIHint());
+  }
 
   /* Initialize HDR info. */
   updateHDRInfo();
@@ -532,6 +561,35 @@ GHOST_TSuccess GHOST_WindowWin32::setClientHeight(uint32_t height)
 GHOST_TSuccess GHOST_WindowWin32::setClientSize(uint32_t width, uint32_t height)
 {
   GHOST_TSuccess success;
+  /* Embedded WS_CHILD has no non-client chrome; size the HWND exactly to the
+   * requested client size (and prefer the host panel size when available). */
+  HWND embed_parent = system_ ? system_->getEmbedParentWindow() : nullptr;
+  if (embed_parent && ::GetParent(h_wnd_) == embed_parent) {
+    RECT parent_client = {0, 0, 0, 0};
+    if (::GetClientRect(embed_parent, &parent_client)) {
+      const LONG pw = parent_client.right - parent_client.left;
+      const LONG ph = parent_client.bottom - parent_client.top;
+      if (pw > 0 && ph > 0) {
+        width = uint32_t(pw);
+        height = uint32_t(ph);
+      }
+    }
+    RECT cr = {0, 0, 0, 0};
+    ::GetClientRect(h_wnd_, &cr);
+    if ((cr.right - cr.left) == LONG(width) && (cr.bottom - cr.top) == LONG(height)) {
+      return GHOST_kSuccess;
+    }
+    return ::SetWindowPos(h_wnd_,
+                          nullptr,
+                          0,
+                          0,
+                          int(width),
+                          int(height),
+                          SWP_NOZORDER | SWP_NOACTIVATE) ?
+               GHOST_kSuccess :
+               GHOST_kFailure;
+  }
+
   GHOST_Rect cBnds, wBnds;
   getClientBounds(cBnds);
   if ((cBnds.getWidth() != int32_t(width)) || (cBnds.getHeight() != int32_t(height))) {
@@ -584,6 +642,15 @@ void GHOST_WindowWin32::clientToScreen(int32_t inX,
 
 GHOST_TSuccess GHOST_WindowWin32::setState(GHOST_TWindowState state)
 {
+  /* Embedded WS_CHILD of an external host (Dream Scintilla / --parent-hwnd):
+   * never re-add WS_CAPTION or call SetWindowPlacement — that freezes the child
+   * at create-time size and leaves black gutters when the host panel grows. */
+  HWND embed_parent = system_ ? system_->getEmbedParentWindow() : nullptr;
+  if (embed_parent && ::GetParent(h_wnd_) == embed_parent) {
+    (void)state;
+    return GHOST_kSuccess;
+  }
+
   GHOST_TWindowState curstate = getState();
   LONG_PTR style = GetWindowLongPtr(h_wnd_, GWL_STYLE) | WS_CAPTION;
   WINDOWPLACEMENT wp;

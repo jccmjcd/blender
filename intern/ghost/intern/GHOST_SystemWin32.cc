@@ -457,6 +457,43 @@ bool GHOST_SystemWin32::processEvents(bool waitForEvent)
       }
       hasEventHandled = true;
     }
+    /* Keep embedded child sized to the host client. Cross-process MoveWindow from a
+     * DPI-unaware host can leave the child short (black gutters); sync from here. */
+    else if (embed_parent_hwnd_ && ::IsWindow(embed_parent_hwnd_)) {
+      RECT parent_client = {0, 0, 0, 0};
+      if (::GetClientRect(embed_parent_hwnd_, &parent_client)) {
+        const int pw = int(parent_client.right - parent_client.left);
+        const int ph = int(parent_client.bottom - parent_client.top);
+        if (pw > 0 && ph > 0) {
+          GHOST_WindowManager *wm = getWindowManager();
+          if (wm) {
+            for (GHOST_IWindow *iter_win : wm->getWindows()) {
+              GHOST_WindowWin32 *win32 = static_cast<GHOST_WindowWin32 *>(iter_win);
+              HWND hwnd = win32->getHWND();
+              if (!hwnd || ::GetParent(hwnd) != embed_parent_hwnd_) {
+                continue;
+              }
+              RECT child_client = {0, 0, 0, 0};
+              ::GetClientRect(hwnd, &child_client);
+              const int cw = int(child_client.right - child_client.left);
+              const int ch = int(child_client.bottom - child_client.top);
+              if (cw != pw || ch != ph) {
+                ::SetWindowPos(hwnd,
+                               nullptr,
+                               0,
+                               0,
+                               pw,
+                               ph,
+                               SWP_NOZORDER | SWP_NOACTIVATE);
+                /* Ensure WM picks up the new client size (layout + GPU). */
+                pushEvent(processWindowSizeEvent(win32));
+                hasEventHandled = true;
+              }
+            }
+          }
+        }
+      }
+    }
 
     if (waitForEvent && !::PeekMessage(&msg, nullptr, 0, 0, PM_NOREMOVE)) {
 #if 1
